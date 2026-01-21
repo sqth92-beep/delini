@@ -1,59 +1,48 @@
-import type { Express, Request, Response, NextFunction } from "express";
+const uploadFile = useCallback(async (file: File): Promise<{ objectPath: string; url: string } | null> => {
+  setIsUploading(true);
+  setError(null);
 
-function requireAdmin(req: Request, res: Response, next: NextFunction) {
-  if (!(req.session as any)?.adminId) return res.status(401).json({ message: "غير مصرح" });
-  next();
-}
-
-export function registerObjectStorageRoutes(app: Express): void {
-  app.post("/api/uploads/request-url", requireAdmin, (req, res) => {
-    try {
-      const { name, size, contentType } = req.body;
-
-      if (!name || !contentType || !size) {
-        return res.status(400).json({ error: "الحقول المطلوبة: name, contentType, size" });
-      }
-
-      // التحقق من نوع الملف
-      const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-      if (!allowedTypes.includes(contentType)) {
-        return res.status(400).json({ error: "نوع الملف غير مسموح" });
-      }
-
-      // التحقق من الحجم (5MB كحد أقصى)
-      if (size > 5 * 1024 * 1024) {
-        return res.status(400).json({ error: "حجم الملف يجب أن يكون أقل من 5 ميجابايت" });
-      }
-
-      // إرجاع كل بيانات Cloudinary المطلوبة
-      const cloudName = process.env.CLOUDINARY_CLOUD_NAME || 'dllsznmnq';
-      const apiKey = process.env.CLOUDINARY_API_KEY || '915772657186991';
-      const folder = 'delini';
-      const publicId = `delini_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
-
-      res.json({
-        success: true,
-        cloudName: cloudName,
-        apiKey: apiKey,
-        uploadPreset: 'ml_default',
-        folder: folder,
-        publicId: publicId,
-        uploadURL: `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`,
-        timestamp: Math.round((new Date()).getTime() / 1000),
-        // للإشارة فقط - الـ signature يولد في الفرونت اند
-        note: "استخدم cloudinary.uploadWidget في الفرونت اند مع هذه البيانات"
-      });
-    } catch (error) {
-      console.error("Error in upload request:", error);
-      res.status(500).json({ error: "فشل في إعداد بيانات الرفع" });
-    }
-  });
-
-  // إضافة route للرفع المباشر (اختياري)
-  app.post("/api/uploads/direct", requireAdmin, (req, res) => {
-    res.json({
-      success: false,
-      message: "استخدم Cloudinary Upload Widget في الفرونت اند مباشرة"
+  try {
+    // 1. احصل على بيانات Cloudinary
+    const response = await fetch("/api/uploads/request-url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: file.name,
+        size: file.size,
+        contentType: file.type,
+      }),
     });
-  });
-}
+
+    const data = await response.json();
+
+    // 2. رفع مباشر لـ Cloudinary
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('upload_preset', 'ml_default');
+    formData.append('folder', 'delini');
+
+    const uploadResponse = await fetch(data.uploadURL, {
+      method: 'POST',
+      body: formData,
+    });
+
+    const result = await uploadResponse.json();
+
+    const finalResult = {
+      objectPath: result.secure_url,
+      url: result.secure_url,
+    };
+
+    options.onSuccess?.(finalResult);
+    return finalResult;
+
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error("فشل رفع الملف");
+    setError(error);
+    options.onError?.(error);
+    return null;
+  } finally {
+    setIsUploading(false);
+  }
+}, [options]);
