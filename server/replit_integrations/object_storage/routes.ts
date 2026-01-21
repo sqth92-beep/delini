@@ -7,10 +7,53 @@ function requireAdmin(req: Request, res: Response, next: NextFunction) {
 
 export function registerObjectStorageRoutes(app: Express): void {
   app.post("/api/uploads/request-url", requireAdmin, (req, res) => {
+    try {
+      const { name, size, contentType } = req.body;
+
+      if (!name || !contentType || !size) {
+        return res.status(400).json({ error: "الحقول المطلوبة: name, contentType, size" });
+      }
+
+      // التحقق من نوع الملف
+      const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+      if (!allowedTypes.includes(contentType)) {
+        return res.status(400).json({ error: "نوع الملف غير مسموح" });
+      }
+
+      // التحقق من الحجم (5MB كحد أقصى)
+      if (size > 5 * 1024 * 1024) {
+        return res.status(400).json({ error: "حجم الملف يجب أن يكون أقل من 5 ميجابايت" });
+      }
+
+      // إرجاع كل بيانات Cloudinary المطلوبة
+      const cloudName = process.env.CLOUDINARY_CLOUD_NAME || 'dllsznmnq';
+      const apiKey = process.env.CLOUDINARY_API_KEY || '915772657186991';
+      const folder = 'delini';
+      const publicId = `delini_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+
+      res.json({
+        success: true,
+        cloudName: cloudName,
+        apiKey: apiKey,
+        uploadPreset: 'ml_default',
+        folder: folder,
+        publicId: publicId,
+        uploadURL: `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`,
+        timestamp: Math.round((new Date()).getTime() / 1000),
+        // للإشارة فقط - الـ signature يولد في الفرونت اند
+        note: "استخدم cloudinary.uploadWidget في الفرونت اند مع هذه البيانات"
+      });
+    } catch (error) {
+      console.error("Error in upload request:", error);
+      res.status(500).json({ error: "فشل في إعداد بيانات الرفع" });
+    }
+  });
+
+  // إضافة route للرفع المباشر (اختياري)
+  app.post("/api/uploads/direct", requireAdmin, (req, res) => {
     res.json({
-      cloudName: process.env.CLOUDINARY_CLOUD_NAME,
-      apiKey: process.env.CLOUDINARY_API_KEY,
-      uploadPreset: 'ml_default'
+      success: false,
+      message: "استخدم Cloudinary Upload Widget في الفرونت اند مباشرة"
     });
   });
 }
