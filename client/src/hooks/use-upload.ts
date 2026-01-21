@@ -1,67 +1,26 @@
 import { useState, useCallback } from "react";
-import type { UppyFile } from "@uppy/core";
-
-interface UploadMetadata {
-  name: string;
-  size: number;
-  contentType: string;
-}
-
-interface UploadResponse {
-  uploadURL: string;
-  objectPath: string;
-  metadata: UploadMetadata;
-}
 
 interface UseUploadOptions {
-  onSuccess?: (response: UploadResponse) => void;
+  onSuccess?: (response: { objectPath: string; url: string }) => void;
   onError?: (error: Error) => void;
 }
 
-/**
- * React hook for handling file uploads with presigned URLs.
- *
- * This hook implements the two-step presigned URL upload flow:
- * 1. Request a presigned URL from your backend (sends JSON metadata, NOT the file)
- * 2. Upload the file directly to the presigned URL
- *
- * @example
- * ```tsx
- * function FileUploader() {
- *   const { uploadFile, isUploading, error } = useUpload({
- *     onSuccess: (response) => {
- *       console.log("Uploaded to:", response.objectPath);
- *     },
- *   });
- *
- *   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
- *     const file = e.target.files?.[0];
- *     if (file) {
- *       await uploadFile(file);
- *     }
- *   };
- *
- *   return (
- *     <div>
- *       <input type="file" onChange={handleFileChange} disabled={isUploading} />
- *       {isUploading && <p>Uploading...</p>}
- *       {error && <p>Error: {error.message}</p>}
- *     </div>
- *   );
- * }
- * ```
- */
 export function useUpload(options: UseUploadOptions = {}) {
   const [isUploading, setIsUploading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
   const [progress, setProgress] = useState(0);
 
   /**
-   * Request a presigned URL from the backend.
-   * IMPORTANT: Send JSON metadata, NOT the file itself.
+   * رفع الملف مباشرة إلى Cloudinary
    */
-  const requestUploadUrl = useCallback(
-    async (file: File): Promise<UploadResponse> => {
+  const uploadFile = useCallback(async (file: File): Promise<{ objectPath: string; url: string } | null> => {
+    setIsUploading(true);
+    setError(null);
+    setProgress(0);
+
+    try {
+      // 1. احصل على بيانات Cloudinary من الـ backend
+      setProgress(10);
       const response = await fetch("/api/uploads/request-url", {
         method: "POST",
         headers: {
@@ -70,123 +29,129 @@ export function useUpload(options: UseUploadOptions = {}) {
         body: JSON.stringify({
           name: file.name,
           size: file.size,
-          contentType: file.type || "application/octet-stream",
+          contentType: file.type || "image/jpeg",
         }),
       });
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || "Failed to get upload URL");
-      }
-
-      return response.json();
-    },
-    []
-  );
-
-  /**
-   * Upload a file directly to the presigned URL.
-   */
-  const uploadToPresignedUrl = useCallback(
-    async (file: File, uploadURL: string): Promise<void> => {
-      const response = await fetch(uploadURL, {
-        method: "PUT",
-        body: file,
-        headers: {
-          "Content-Type": file.type || "application/octet-stream",
-        },
-      });
-
-      if (!response.ok) {
-        throw new Error("Failed to upload file to storage");
-      }
-    },
-    []
-  );
-
-  /**
-   * Upload a file using the presigned URL flow.
-   *
-   * @param file - The file to upload
-   * @returns The upload response containing the object path
-   */
-  const uploadFile = useCallback(
-    async (file: File): Promise<UploadResponse | null> => {
-      setIsUploading(true);
-      setError(null);
-      setProgress(0);
-
-      try {
-        // Step 1: Request presigned URL (send metadata as JSON)
-        setProgress(10);
-        const uploadResponse = await requestUploadUrl(file);
-
-        // Step 2: Upload file directly to presigned URL
-        setProgress(30);
-        await uploadToPresignedUrl(file, uploadResponse.uploadURL);
-
-        setProgress(100);
-        options.onSuccess?.(uploadResponse);
-        return uploadResponse;
-      } catch (err) {
-        const error = err instanceof Error ? err : new Error("Upload failed");
-        setError(error);
-        options.onError?.(error);
-        return null;
-      } finally {
-        setIsUploading(false);
-      }
-    },
-    [requestUploadUrl, uploadToPresignedUrl, options]
-  );
-
-  /**
-   * Get upload parameters for Uppy's AWS S3 plugin.
-   *
-   * IMPORTANT: This function receives the UppyFile object from Uppy.
-   * Use file.name, file.size, file.type to request per-file presigned URLs.
-   *
-   * Use this with the ObjectUploader component:
-   * ```tsx
-   * <ObjectUploader onGetUploadParameters={getUploadParameters}>
-   *   Upload
-   * </ObjectUploader>
-   * ```
-   */
-  const getUploadParameters = useCallback(
-    async (
-      file: UppyFile<Record<string, unknown>, Record<string, unknown>>
-    ): Promise<{
-      method: "PUT";
-      url: string;
-      headers?: Record<string, string>;
-    }> => {
-      // Use the actual file properties to request a per-file presigned URL
-      const response = await fetch("/api/uploads/request-url", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          name: file.name,
-          size: file.size,
-          contentType: file.type || "application/octet-stream",
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error("Failed to get upload URL");
+        throw new Error("فشل في الحصول على بيانات الرفع");
       }
 
       const data = await response.json();
+
+      // 2. تحقق إذا الـ backend يعطي بيانات Cloudinary
+      if (data.uploadURL && data.uploadURL.includes('cloudinary.com')) {
+        // رفع لـ Cloudinary مباشرة
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('upload_preset', 'ml_default');
+        if (data.folder) formData.append('folder', data.folder);
+        if (data.publicId) formData.append('public_id', data.publicId);
+
+        setProgress(30);
+        const cloudinaryResponse = await fetch(data.uploadURL, {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!cloudinaryResponse.ok) {
+          throw new Error("فشل رفع الصورة إلى Cloudinary");
+        }
+
+        const cloudinaryData = await cloudinaryResponse.json();
+
+        setProgress(100);
+        const result = {
+          objectPath: cloudinaryData.secure_url,
+          url: cloudinaryData.secure_url,
+        };
+
+        options.onSuccess?.(result);
+        return result;
+
+      } else if (data.cloudName && data.apiKey) {
+        // 3. بديل: رفع لـ Cloudinary باستخدام API
+        const cloudName = data.cloudName;
+        const apiKey = data.apiKey;
+        const uploadPreset = data.uploadPreset || 'ml_default';
+        const folder = data.folder || 'delini';
+
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('upload_preset', uploadPreset);
+        formData.append('folder', folder);
+
+        setProgress(30);
+        const cloudinaryResponse = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/image/upload`, {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!cloudinaryResponse.ok) {
+          throw new Error("فشل رفع الصورة");
+        }
+
+        const cloudinaryData = await cloudinaryResponse.json();
+
+        setProgress(100);
+        const result = {
+          objectPath: cloudinaryData.secure_url,
+          url: cloudinaryData.secure_url,
+        };
+
+        options.onSuccess?.(result);
+        return result;
+
+      } else {
+        throw new Error("بيانات Cloudinary غير متوفرة");
+      }
+
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error("فشل رفع الملف");
+      setError(error);
+      options.onError?.(error);
+      return null;
+    } finally {
+      setIsUploading(false);
+    }
+  }, [options]);
+
+  /**
+   * دعم Uppy (اختياري)
+   */
+  const getUploadParameters = useCallback(async (file: any) => {
+    const response = await fetch("/api/uploads/request-url", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        name: file.name,
+        size: file.size,
+        contentType: file.type || "application/octet-stream",
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error("Failed to get upload URL");
+    }
+
+    const data = await response.json();
+
+    // إذا Cloudinary يعطي URL مباشر
+    if (data.uploadURL && data.uploadURL.includes('cloudinary.com')) {
       return {
-        method: "PUT",
+        method: "POST",
         url: data.uploadURL,
-        headers: { "Content-Type": file.type || "application/octet-stream" },
+        fields: {
+          upload_preset: 'ml_default',
+          folder: data.folder || 'delini',
+        },
       };
-    },
-    []
-  );
+    }
+
+    throw new Error("Cloudinary upload not configured properly");
+  }, []);
 
   return {
     uploadFile,
@@ -196,4 +161,3 @@ export function useUpload(options: UseUploadOptions = {}) {
     progress,
   };
 }
-
